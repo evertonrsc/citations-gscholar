@@ -60,6 +60,9 @@ func readPapers(filename string) ([]string, error) {
 }
 
 func getPublicationInfo(paperTitle string) PublicationInfo {
+	var publication PublicationInfo
+	publication.title = paperTitle
+
 	gsparameters := map[string]string{
 		"engine":  "google_scholar",
 		"q":       fmt.Sprintf("%q", paperTitle),
@@ -67,19 +70,19 @@ func getPublicationInfo(paperTitle string) PublicationInfo {
 		"hl":      "en",
 	}
 	search := gs.NewGoogleSearch(gsparameters, gsparameters["api_key"])
-	response, err := search.GetJSON()
-	checkError(err)
+	response, _ := search.GetJSON()
 
 	organicResults := response["organic_results"].([]interface{})
 	content := organicResults[0].(map[string]interface{})
-
-	var publication PublicationInfo
-	publication.title = paperTitle
+	
 	publication.resultId = content["result_id"].(string)
-
 	summary := content["publication_info"].(map[string]interface{})["summary"].(string)
 	lastIndex := strings.LastIndex(summary, " -")
-	publication.year, _ = strconv.Atoi(summary[lastIndex-4 : lastIndex])
+	if lastIndex != -1 {
+		publication.year, _ = strconv.Atoi(summary[lastIndex-4 : lastIndex])
+	} else {
+		publication.year = 0
+	}
 
 	citedBy := content["inline_links"].(map[string]interface{})["cited_by"]
 	if citedBy != nil {
@@ -94,13 +97,13 @@ func getPublicationInfo(paperTitle string) PublicationInfo {
 		"hl":      "en",
 	}
 	search = gs.NewGoogleSearch(gscparameters, gsparameters["api_key"])
-	response, err = search.GetJSON()
-	checkError(err)
+	response, _ = search.GetJSON()
 
 	citations := response["citations"].([]interface{})
 	vancouverCite := citations[len(citations)-1].(map[string]interface{})
 	citeVancouverSnippet := vancouverCite["snippet"].(string)
 	publication.authors = strings.Split(citeVancouverSnippet[:strings.Index(citeVancouverSnippet, ".")], ", ")
+	
 	return publication
 }
 
@@ -120,8 +123,10 @@ func getOrganicCitations(paperTitle string) int {
 			"hl":      "en",
 		}
 		search := gs.NewGoogleSearch(gsparameters, gsparameters["api_key"])
-		response, err := search.GetJSON()
-		checkError(err)
+		response, _ := search.GetJSON()
+		if response["organic_results"] == nil {
+			return -1
+		}
 
 		organicResults := response["organic_results"].([]interface{})
 		for i := range organicResults {
@@ -143,14 +148,22 @@ func getOrganicCitations(paperTitle string) int {
 func getAverageCitations(paperTitle string) float32 {
 	currentYear := time.Now().Year()
 	publicationInfo := getPublicationInfo(paperTitle)
-	return float32(publicationInfo.citations) / float32(currentYear-publicationInfo.year)
+	if publicationInfo.citations != 0 {
+		if currentYear - publicationInfo.year == 0 {
+			return float32(publicationInfo.citations)
+		} else {
+			return float32(publicationInfo.citations) / float32(currentYear-publicationInfo.year)
+		}
+	} else {
+		return 0
+	}
 }
 
 func printCitationCounts(paperTitle string, csvContents *string) {
 	totalCitations := getTotalCitations(paperTitle)
 	averageCitations := getAverageCitations(paperTitle)
 	organicCitations := getOrganicCitations(paperTitle)
-	fmt.Printf("  Total: %d, Average: %.1f, Organic: %d\n\n", totalCitations, averageCitations, organicCitations)
+	fmt.Printf("  Total: %d, Average: %.2f, Organic: %d\n\n", totalCitations, averageCitations, organicCitations)
 	*csvContents += fmt.Sprintf("\"%s\",%d,%.2f,%d\n", paperTitle, totalCitations, averageCitations, organicCitations)
 }
 
@@ -167,6 +180,13 @@ func checkError(err error) {
 	}
 }
 
+func printUsage() {
+	fmt.Println("Usage of citations-gscholar:")
+	fmt.Println("  -p string\n\tPaper title for obtaining citation counts")
+	fmt.Println("  -f string\n\tText file with a list of paper titles for obtaining citation counts")
+	fmt.Println("  -o string\n\tCSV file to output citation counts")
+}
+
 func main() {
 	flag.StringVar(&paperTitle, "p", "", "Paper title for obtaining citation counts")
 	flag.StringVar(&inputFile, "f", "", "Text file with a list of paper titles for obtaining citation counts")
@@ -175,15 +195,21 @@ func main() {
 
 	if len(os.Args) == 1 {
 		fmt.Println("Error: using at least one flag is mandatory")
-		fmt.Println("Usage of citations-gscholar:")
-		fmt.Println("  -p string\n\tPaper title for obtaining citation counts")
-		fmt.Println("  -f string\n\tText file with a list of paper titles for obtaining citation counts")
-		fmt.Println("  -o string\n\tCSV file to output citation counts")
+		printUsage()
 		os.Exit(1)
 	}
 
-	fmt.Println(serpapi_key)
-	os.Exit(0)
+	if paperTitle != "" && inputFile != "" {
+		fmt.Println("Error: mismatch between -p and -f flags, only one of them shall be used")
+		printUsage()
+		os.Exit(1)
+	}
+
+	if paperTitle == "" && inputFile == "" && outCsvFile != "" {
+		fmt.Println("Error: a single paper title or a file with a list of paper titles must be provided as input")
+		printUsage()
+		os.Exit(1)
+	}
 
 	csvContents := "Title,Total,Average,Organic\n"
 
